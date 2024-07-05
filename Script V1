@@ -1,6 +1,5 @@
 function main() {
     const sheet_url = "https://docs.google.com/spreadsheets/d/1wEnLVyDjw7ocZC3dYnYFoBDfYm0kR3n3q1-5BUbcX1E/edit"
-    const accId = "xxx-xxx-xxxx"
     const period1 = {
         start: "05/24/2024",
         end: "05/01/2024"
@@ -10,18 +9,11 @@ function main() {
         end: "05/01/2023"
     }
     clearSpreadsheet(sheet_url)
-    const accountIterator = AdsManagerApp.accounts().withIds([accId]).get()
-    let results=[]
-    while (accountIterator.hasNext()) {
-        AdsManagerApp.select(accountIterator.next())
-        const curAcc = getData(period1, period2)
-        results = [...results, ...curAcc]
-    }
-
-    if (results.length==0) return
+    const results = getData(period1, period2)
+    if (results.length == 0) return
     const ss = SpreadsheetApp.openByUrl(sheet_url)
     const sh = ss.getSheetByName("Data")
-    sh.getRange(2,1,results.length, results[0].length).setValues(results)
+    sh.getRange(2, 1, results.length, results[0].length).setValues(results)
 }
 
 function clearSpreadsheet(sheet_url) {
@@ -40,15 +32,18 @@ function clearSpreadsheet(sheet_url) {
 }
 
 function getData(period1, period2) {
-    const comp_fields = ['clicks', 'impressions', 'ctr', 'acpc', 'cost', 'conversions', 'costconv', 'convrate', 'budgetLIS', 'rankLIS', 'is']
+    const comp_fields1 = ['clicks', 'impressions', 'ctr', 'acpc', 'cost', 'conversions', 'costconv', 'convrate']
+    const comp_fields2 = ['budgetLIS', 'rankLIS', 'is']
     const data = []
     const p1 = getCampaignData(period1)
     const p2 = getCampaignData(period2)
     const currency = AdsApp.currentAccount().getCurrencyCode()
-    for (let id of [...Object.keys(p1)]){
-      const basefields = [p1[id].status, p1[id].name, p1[id].budgetName,currency, p1[id].budgetAmount, p1[id].status2,  p1[id].reasons, p1[id].type, (p1[id].score*100).toFixed(2)]
-      const metrics=analyze(comp_fields,p1[id],p2[id])
-      data.push([...basefields,...metrics])
+    for (let id of [...Object.keys(p1)]) {
+        const basefields1 = [p1[id].status, p1[id].name, p1[id].budgetName, currency, p1[id].budgetAmount, "Daily", p1[id].status2, p1[id].reasons, p1[id].type, (p1[id].score * 100).toFixed(2)]
+        const basefields2 = [p1[id].biddingtype, p1[id].tcpa]
+        const metrics1 = analyze(comp_fields1, p1[id], p2[id])
+        const metrics2 = analyze(comp_fields2, p1[id], p2[id])
+        data.push([...basefields1, ...metrics1, ...basefields2, ...metrics2, p1[id].labels])
     }
     return data
 }
@@ -60,6 +55,7 @@ function costMicros(cost) {
 function getCampaignData(period) {
     let campaigns = {}
     const [start, end] = getDates(period)
+    const labels = getLabels()
     const searchResults = AdsApp.search(`SELECT campaign.status,
                                                 campaign.id,
                                                 campaign.name,
@@ -67,41 +63,51 @@ function getCampaignData(period) {
                                                 campaign_budget.amount_micros,
                                                 campaign.primary_status,
                                                 campaign.primary_status_reasons,
-                                                campaign.advertising_channel_type, campaign.optimization_score, metrics.clicks,
+                                                campaign.advertising_channel_type,
+                                                campaign.optimization_score,
+                                                metrics.clicks,
                                                 metrics.impressions,
                                                 metrics.ctr,
                                                 metrics.cost_micros,
                                                 metrics.conversions,
                                                 metrics.search_budget_lost_impression_share,
                                                 metrics.search_rank_lost_impression_share,
-                                                metrics.search_impression_share
+                                                metrics.search_impression_share,
+                                                campaign.bidding_strategy_type,
+                                                campaign.target_cpa.target_cpa_micros,
+                                                campaign.labels
+                                                
                                          from campaign
                                          WHERE segments.date >= '${start}'
-                                           AND segments.date <= '${end}' AND campaign.status=ENABLED `)
+                                           AND segments.date <= '${end}'
+                                           AND campaign.status = ENABLED `)
     for (let row of searchResults) {
         if (!row.metrics) continue
         let campaign = {}
-        //Logger.log(row.metrics)
+        campaign.labels = row.campaign.labels.map(i=>labels[i]).join(", ")
         campaign.name = row.campaign.name
         campaign.id = row.campaign.id
         campaign.budgetName = row.campaignBudget.name,
         campaign.budgetAmount = costMicros(row.campaignBudget.amountMicros)
         campaign.status = row.campaign.status
         campaign.status2 = row.campaign.primaryStatus
-        campaign.reasons = row.campaign.primaryStatusReasons?row.campaign.primaryStatusReasons.join(", "):""
+        campaign.reasons = row.campaign.primaryStatusReasons ? row.campaign.primaryStatusReasons.join(", ") : ""
         campaign.type = row.campaign.advertisingChannelType
         campaign.score = row.campaign.optimizationScore
         campaign.clicks = parseInt(row.metrics.clicks)
         campaign.impressions = parseInt(row.metrics.impressions)
-        campaign.ctr = row.metrics.ctr||0
-        campaign.acpc = campaign.impressions==0?0:campaign.clicks*100/campaign.impressions
+        campaign.ctr = row.metrics.ctr || 0
+        campaign.acpc = campaign.impressions == 0 ? 0 : campaign.clicks * 100 / campaign.impressions
         campaign.cost = costMicros(row.metrics.costMicros)
         campaign.conversions = parseFloat(row.metrics.conversions)
-        campaign.costconv = campaign.conversions==0?0:campaign.cost/campaign.conversions
-        campaign.convrate = campaign.clicks==0?0:campaign.conversions*100/campaign.clicks
-        campaign.budgetLIS = (row.metrics?.searchBudgetLostImpressionShare||0)*100
-        campaign.rankLIS = (row.metrics?.searchRankLostImpressionShare||0)*100
-        campaign.is = (row.metrics?.searchImpressionShare||0)*100
+        campaign.costconv = campaign.conversions == 0 ? 0 : campaign.cost / campaign.conversions
+        campaign.convrate = campaign.clicks == 0 ? 0 : campaign.conversions * 100 / campaign.clicks
+        campaign.budgetLIS = (row.metrics?.searchBudgetLostImpressionShare || 0) * 100
+        campaign.rankLIS = (row.metrics?.searchRankLostImpressionShare || 0) * 100
+        campaign.is = (row.metrics?.searchImpressionShare || 0) * 100
+        campaign.biddingtype = row.campaign.biddingStrategyType
+        campaign.tpca = costMicros(row.campaign?.targetCpa?.targetCpaMicros||0)
+                                                
         campaigns[row.campaign.id] = campaign
     }
     return campaigns
@@ -109,16 +115,33 @@ function getCampaignData(period) {
 }
 
 function getDates(period) {
-    const start = Utilities.formatDate(new Date(period.end), AdsApp.currentAccount().getTimeZone(), "yyyy-MM-dd")
-    const end = Utilities.formatDate(new Date(period.start), AdsApp.currentAccount().getTimeZone(), "yyyy-MM-dd")
+    const start = dateConvert(period.end)
+    const end = dateConvert(period.start)
     return [start, end]
 }
-function analyze (fields, p1, p2){
-  const result = []
-  for (let field of fields){
-    const p2v = p2 ? p2[field] : 0
-    const p1v = p1[field]
-    result.push([p1v.toFixed(2),p2v.toFixed(2),(p1v-p2v).toFixed(2),p2v==0?0:((p1v-p2v)/p2v).toFixed(2)])
-  }
-  return result.flat()
+
+function analyze(fields, p1, p2) {
+    const result = []
+    for (let field of fields) {
+        const p2v = p2 ? p2[field] : 0
+        const p1v = p1[field]
+        result.push([p1v.toFixed(2), p2v.toFixed(2), (p1v - p2v).toFixed(2), p2v == 0 ? "0%" : `${((p1v - p2v)*100 / p2v).toFixed(2)}%`])
+    }
+    return result.flat()
+}
+
+function getLabels(){
+  let result={}  
+  const searchResults = AdsApp.search(`SELECT label.resource_name, label.name from label`)
+  for (let row of searchResults){
+  result[row.label.resourceName]=row.label.name
+  }  
+  return result
+}
+
+function dateConvert(input) {
+    const [month, day, year] = input.split('/');
+    
+    // Return the new format
+    return `${year}-${month}-${day}`;
 }
